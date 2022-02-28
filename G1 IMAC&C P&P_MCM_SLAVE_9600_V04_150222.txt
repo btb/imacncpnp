@@ -1,0 +1,302 @@
+'------------ Honda Insight IMAC&C P&P System 9600baud & Slider Pot ------------
+'-------- Picbasic Pro  Compiler version PIC16F1825 - 150222 - V0.04 -----------
+'-------------------------------------------------------------------------------
+'
+'***************************** IMAC&C Notes ************************************
+
+'The Insight ECM sends CMDPWR 2khz 50% duty cycle pulses to the MCM to tell
+'it to assist(>50% duty) or charge(<50% duty cycle)
+
+'The ECM also pulls the MAMODE 2 signal low when in the assist mode, and it
+'is high when in the regen mode.
+
+'The ECM replaces the 20KHZ 50% duty cycle MAMODE 1 signal with a 20KHZ 25%
+'duty cycle signal when assist is desired. 
+
+'The ECM replaces the 20KHZ 50% duty cycle MAMODE 1 signal with a 20KHZ 35%
+'duty cycle signal when regen is desired. 
+
+'If Sinking the MCM pull ups into pics then 90% duty pwm = 90% duty
+
+'Standby Mode = CmdPwr 50%     MaMode1 50%   MaMode2 High
+'Assist Mode  = CmdPwr 51-90%  Mamode1 25%   MaMode2 Low
+'Regen Mode   = CmdPwr 49-10%  MaMode1 35%   MaMode2 High
+'Start Mode   = CmdPwr 50%     MaMode1 85%   MaMode2 Low
+
+'The DC-DC converter can be controlled with the MAMOD1 or MAMOD2.
+
+'15% duty shuts the DC-DC off. Any other duty enables it.
+'If MAMOD2 is pulled low, the DC-DC turns on regardless of duty on MAMOD1. 
+
+'*************************** Pic 16F1825 Pinouts *******************************
+'** PIC 16F1825 Pinouts FLASH 8K (words) SRAM 1024 (bytes) EEPROM 256 (bytes) **
+
+'                                    Top
+'                                   __^___
+'(Vdd)                     +Vdd -01|  1  |14- Gnd                          (Gnd)
+'(Scs)                  Scs Out -02|  6  |13- In IcspDat & Slider Adc AN0  (PGD)
+'(HCT 4053 Control)         Out -03|  F  |12- In IcspClk & Spare Adc AN1   (PGC)
+'(Mclr) & Ignition Detect  Mclr -04|  1  |11- Out CCP3         (CmdPwr 2khz Pwm)  
+'(Rx from OBDIIC&C)       Rx In -05|  8  |10- Out Mamode2        (Mamode2 Hi/Lo)
+'(Tx to OBDIIC&C)        Tx Out -06|  2  |09- Out CCP4       (Mamode1 20khz Pwm) 
+'(Led2 Blu/Yel)        Led2 Out -07|  5  |08- Out Led1            (Led1 Red/Grn)
+'                                   -----
+
+'************************ Maxim 4619 or HCT4053 Pinouts ************************
+
+'                                    Top					
+'                                   _____
+'(MaMode1 From Pic)           Y1 -1|  ^  |16- +V               	 	      (Vcc)
+'(Mamode1 From ECM)           Y0 -2|     |15- Y               	(CmdPwr to MCM)
+'(MaMode2 From Pic)           Z1 -3|  4  |14- X                (MaMode1 to MCM) 
+'(MaMode2 to MCM)	           Z -4|  0  |13- X1              (CmdPwr From Pic)
+'(MaMode2 From ECM)           Z0 -5|  5  |12- X0              (CmdPwr From ECM)
+'(Switch Enable)          Enable -6|  3  |11- XC             (X CmdPwr Control)
+'(No Connection)              Nc -7|     |10- YC            (Y Mamode1 Control) 
+'(Gnd)           	         Gnd -8|     |9 - ZC            (Z Mamode2 Control)
+'                                   ----- 
+
+'**** PIC16F1825 ICSP In circuit serial Programming Pinouts 5 Pin Sil 0.1" *****
+
+'1) MCLR & Ignition Switch Detect In
+'2) +5V
+'3) GND
+'4) Data & Slider Pot In
+'5) Clock
+
+'**************************** Slider Pot Specification *************************      
+
+'10k 60mm Travel Linear Centre Detent Bourns PTA6043-2215DPB103
+'Note the slider pot must have a 1.2k series resistor at each end +/-
+
+'******************************** Pcb Specs ************************************
+
+'Board Supply Voltage 5.00V
+'CPU Speed 8mhz with internal resonator 
+'Average Board Supply Current at 5v <100ma        
+
+'-------------------------------------------------------------------------------
+'                         PBP CODE 8mhz 829 Words
+'-------------------------------------------------------------------------------
+
+'MPASM Config PBP3
+
+#config
+ __config _CONFIG1, _FOSC_INTOSC & _WDTE_SWDTEN & _MCLRE_OFF & _BOREN_OFF & _CLKOUTEN_OFF
+ __config _CONFIG2, _PLLEN_OFF & _LVP_OFF
+#endconfig
+
+DEFINE OSC 8 			'Set oscilator speed to 8mHz 
+OSCCON = %01110000 		'8 Mhz
+
+TRISA = %00001011 		'SET PORTA AS OUTPUTS except A.0,1 (ADC 0,1 & Digital Input 3)
+TRISC = %00100000 		'SET PORTC AS OUTPUTS except C.5
+
+OPTION_REG = %00000000  'Weak Pull Ups Enabled via WPU Latches
+WPUA = %00001011        'Weak Pull Ups enabled on PortA.0,1,3
+
+CM1CON0 = %00000000 	'COMPARATORS OFF
+CM2CON0 = %00000000 	'COMPARATORS OFF
+ANSELA = %00000011      'All Digital I/O except A.0,1 
+ANSELC = %00000000      'All Digital I/O 
+ADCON0 = %00000001		'Turns ADC On Channel AN0
+ADCON1 = %01010000		'ADC fosc/16 Left Justify 8 Bit
+WDTCON = %00010010      'Watchdog Timer 512ms (Controlled by SWDTEN bit 0)
+
+CCPTMRS = %00010000     'Sets Timer resources for HPWM Channels
+
+DEFINE HSER_BAUD 9600	'Set Baud rate to 9600bps
+DEFINE HSER_CLROERR 1	'Clear overflow error automatically
+DEFINE NO_CLRWDT 1      'Don’t insert CLRWDTs. This allows auto PIC reset if stuck 
+
+'------------------------------ Constants --------------------------------------
+
+Mam1Freq        CON 20000	'Set Frequency of HPWM Mamode1 20khz
+CmdpFreq        CON 2000    'Set Frequency of HPWM CmdPwr 2khz
+
+'------------------------------ Variables --------------------------------------
+
+'Variables 8bit
+
+ControlByte	  	var BYTE	'Incoming Verified Control Data Byte
+ControlPacket  	var BYTE[2]	'Define ControlPacket as a Byte array (2 Bytes 0-1) 
+
+CmdPwrDuty    	var BYTE	'2khz PWM CmdPwrDuty for CmdPwr ~10 - 90% (27 = Max Regen [127 = 50% duty] 227 = Max Assist)
+PrevCmdPwrDuty 	var BYTE	'2khz PWM PrevCmdPwrDuty prevents continous restart of pwm routine if duty unchanged 
+
+MaMode1Duty     VAR BYTE	'20khz PWM DutyCycle for MaMode1 50 or 25% (50% = Normal/Regen 25% = Assist)
+PrevMaMode1Duty VAR BYTE	'20khz PWM PrevCmdPwrDuty prevents continous restart of pwm routine if duty unchanged
+
+CheckSum  	    VAR BYTE	'Data Packet Identifier and Checksum $B0
+Slider_Val      var byte    'Slider Pot ADC Value 0-255
+Offset          var byte    'Slider ADC Pic Internal Pull Up Offset Value
+Flags_Byte      var byte    'Flag Bits
+
+'Flags 1bit
+
+Slider_Disable  var Flags_Byte.bit0   'Slider Disable Bit (0=Enabled 1=Disabled)    
+
+'------------------------------- PIC Hardware ----------------------------------
+
+'PortA Alias
+
+'Slider 	VAR PORTA.0	'Define PortA.0 Pin as IcspDat & 10k Slider Pot ADC AN0 Input 
+'Spare  	VAR PORTA.1	'Define PortA.1 Pin as IcspClk & Spare ADC AN1 Input
+'CmdPwr     VAR PORTA.2 'Define PortA.2 Pin as CmdPwr HPWM CCP3 2khz Output 10-90% Duty
+Ignition   	VAR PORTA.3	'Define PortA.3 Pin as Pic Master Clear MCLR and Ignition Check In
+HCT4053     VAR PORTA.4	'Define PortA.4 Pin as HCT4053 chip High/Low
+SCS	  	    VAR PORTA.5	'Define PortA.5 Pin as SCS OutPut 
+
+'PortC Alias
+
+MaMode2    	VAR PORTC.0	'Define PortC.0 Pin as Mamode2 Hi/Lo
+MaMode1     VAR PORTC.1	'Define PortC.1 Pin as Mamode1 HPWM CCP4 20khz Output 25-50% Duty
+RedGrnLed  	VAR PORTC.2 'Define PortC.2 Pin as Red/Grn Led 
+BluYelLed   VAR PORTC.3 'Define PortC.3 Pin as Blu/Yel Led
+HLineOut    VAR PORTC.4 'Define PortC.4 Pin as TX HLine Data Serial Output 9600,8,N,1
+HLineIn     VAR PORTC.5	'Define PortC.5 Pin as RX HLine Data Serial Input 9600,8,N,1            
+
+'******************************************************************************* 
+'****************************** Main Program ***********************************
+'*******************************************************************************
+
+Start:						'Main Program Start
+
+    Clear                   'Clear All Variables
+    Low HCT4053				'De-Activate Mima
+	high SCS				'Disable SCS blink Mode
+	LOW HLineOut            'Lets H-Line Idle High
+    TRISC.2 = 1             'Red/Grn Led Off	
+    TRISC.3 = 1             'Blu/Yel Led Off  	
+	BAUDCON.4 = 1           'Set Serial TX Polarity as Idle Low used due to open collector line driver
+	CmdPwrDuty = 127        'Set to OEM Mode
+	High BluYelLed          'Turn On Blue LED to indicate start 
+	pause 1000              'Wait 1s
+    TRISC.3 = 1             'Blu/Yel Led Off      	
+	pause 1000              'Wait for 1s for things to settle down
+	
+    adcin 0,Slider_Val      'Get Slider Pot Startup Value (Must be centered (detent) for valid calibration) 
+   
+    If Slider_Val < 130 or Slider_Val > 160 then    'Disables Slider pot function if not valid detent value at startup           
+    Slider_Disable = 1      'Set Slider disable flag (One time run only on each IGN On or PIC Reset) 
+    Slider_Val = 127        'Set Slider to Null
+    else
+    Offset = Slider_Val - 127   'Calculate Slider Pot Centre Detent Offset caused by weak pull-up in PIC       
+    endif        	
+	
+'Proteus Slider Pot Simulation ADC Readings Low = 37, High = 232, Middle = 144    	   	
+				
+;******************************* Main Program Loop *****************************
+
+    WDTCON.0 = 1        'Start Watchdog Timer 512ms    
+    
+
+MainLoop:				'Start of Main Program Loop
+
+@   clrwdt              ;Clear Watchdog Timer (512ms)  
+
+    if Ignition = 0 then    'Disables Slider as soon as ignition is turned off
+    Slider_Disable = 1      'Set Slider disable flag (One time run only on each IGN On or PIC Reset) 
+    Slider_Val = 127        'Set Slider to Null
+    endif              
+
+    If Slider_Disable = 0 then  'Slider pot only acted upon if start up test was valid and not disabled   
+    adcin 0,Slider_Val      'Get Slider Pot Value    
+        
+        if Slider_Val < 5 or Slider_Val > 250 then  'Detects disconnected/bad pot   
+        Slider_Disable = 1    'Set Disable Flag
+        Slider_Val = 127      'Set Slider Null Value
+        else                 
+        Slider_Val = Slider_Val - Offset 'Center ADC Result by subtracting positive weak pull-up offset     
+        if Slider_Val < 27 then Slider_Val = 27   'Min Limit
+        if Slider_Val > 227 then Slider_Val = 227 'Max Limit 
+        if Slider_Val > 117 and Slider_Val < 137 then Slider_Val = 127  'Define Detent Null Zone +/- 10 ADC Counts         
+        CmdPwrDuty = Slider_Val    'Load CmdPwrDuty with Slider Pot Data  
+        endif     
+         
+    endif             
+    
+    if Slider_Val = 127 then gosub HLineData   'If Slider Pot not active then wait for serial data on H-Line
+    	
+	If CmdPwrDuty = 3 then  'If command from OBDIIC&C is 3 turn on SCS mode
+	Toggle SCS              'Toggle Scs Mode
+	CmdPwrDuty = 127		'Set CMDPWR to Oem Mode
+	endif     	
+    
+  	gosub UpdateIma			'Gosub UpdateIma      	
+	
+ 	goto MainLoop		    'Goto Main program loop 
+
+'************************ Update IMA Control Signals *************************
+
+UpdateIma:                    	'Jumps here to update Ima Sets/changes HPWM 20khz & SPWM 2khz	
+
+    if CmdPwrDuty < 27 or CmdPwrDuty > 227 then CmdPwrDuty = 127	'If Duty Cycle Out of Bounds then set to 50% duty.
+
+	if CmdPwrDuty > 127 then	'Set Assist Mode
+	MaMode1Duty = 64			'Set MAMODE1 to Assist Mode 25% Duty
+	low MaMode2				    'Set MAMODE2 to Low Pulls Down Line
+	HIGH RedGrnLed              'Turn on Red LED
+	endif 
+	
+	if CmdPwrDuty < 127 then	'Set Regen Mode
+	MaMode1Duty = 90			'Set MAMODE1 to Regen Mode 35% Duty
+	High MaMode2				'Set MAMODE2 to High Pulls Up Line
+	low RedGrnLed               'Turn on Green LED
+	endif
+
+	if CmdPwrDuty = 127 then	'Set Standby Mode
+	MaMode1Duty = 127			'Set MAMODE1 to Normal Mode 50% Duty
+	High MaMode2				'Set MAMODE2 to High Pulls Up Line
+	TRISC.2 = 1                 'Red/Grn Led Off
+	endif
+
+UpdatePwm:					    'Updates CmdPwr & MaMode1 Pwm Duty
+		    
+    IF CmdPwrDuty <> PrevCmdPwrDuty THEN   	'Checks if change in CmdPwr CCP3 reqd
+	PrevCmdPwrDuty = CmdPwrDuty
+	HPWM 3, CmdPwrDuty, Cmdpfreq   	'Change/Start 2khz CmdPwr HPWM         		    	
+	ENDIF
+	
+	iF MaMode1Duty <> PrevMaMode1Duty THEN 	'Checks if change in Mamode1 CCP4 reqd
+	PrevMaMode1Duty = MaMode1Duty 
+	HPWM 4, MaMode1Duty, Mam1freq   	'Change/Start 20khz Mamode1 HPWM
+	ENDIF 
+
+	if CmdPwrDuty = 127 then 	'Enable / Disable IMA Control as reqd
+	low HCT4053				    'De-Activate IMA Control
+	else
+	High HCT4053				'Activate IMA Control 
+	endif
+       		
+	return                 		'Return to main program
+
+'****************************** H-Line Data Routine ****************************
+
+' BB 05 00 80 (C0)               'Example 5 byte Packet (C0) = Checksum
+
+HLineData:                    	'Receives and Decodes Incoming IMAC&C Control Data 
+
+    HSERIN 250, TimeoutJump, [WAIT($BB,$05,$00), STR ControlPacket\2]	'Wait 300ms for $BB & $05 & $00 then Rxd 2 bytes       	
+	CheckSum = $BB + $05 + $00 + ControlPacket[0] 		'Add Packet Start Bytes to Control Byte to Calculate CheckSum    	
+
+	if ControlPacket[1] = CheckSum then 'If Checksum matches do stuff
+	CmdPwrDuty = ControlPacket[0]  'Load CmdPwrDuty from data   
+	return	                       'Return to main program 
+	endif
+	
+    CmdPwrDuty = 127            'Reset to OEM Mode
+	High BluYelLed              'Turn On Blue LED shows incomming data but bad checksum
+	pause 10                    'Wait 10ms
+    TRISC.3 = 1                 'Blu/Yel Led Off    
+	return                      'Return to main program 
+    
+TimeoutJump:                    'Jumps Here if incoming data serial wait timeout     
+ 
+    CmdPwrDuty = 127            'Reset to OEM Mode 
+    Low BluYelLed               'Turn On Yellow Led shows no incomming data 
+    pause 10                    'Wait 10ms
+    TRISC.3 = 1                 'Blu/Yel Led Off    
+    return					    'Return to main program      
+     
+'****************  Notes ***********************	                                                  
